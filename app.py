@@ -3,8 +3,9 @@ import os
 import time
 import html
 import uuid
+import json
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -14,6 +15,7 @@ from telegram.ext import (
     filters,
 )
 import edge_tts
+from keep_alive import keep_alive
 
 try:
     asyncio.get_event_loop()
@@ -23,17 +25,16 @@ except RuntimeError:
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
-# BOT TOKEN ကို Environment Variable မှ ယူမည်၊ မရှိပါက ပေးထားသော Token အား အသုံးပြုမည်
 BOT_TOKEN = os.getenv("BOT_TOKEN", "9283733881:AAFInOE6EZoB6Ypb7WppgT8lFfkmqMBUolU").strip()
 
-MAX_CHARACTERS = 3000
+MAX_CHARACTERS = 4000
+USERS_FILE = "users.json"
 
 REQUIRED_CHANNELS = [
     {"name": "📢 Channel (၁) Join ရန်", "username": "@movierecaps6", "url": "https://t.me/movierecaps6"},
     {"name": "📢 Group (၂) Join ရန်", "username": "@movierecaps67", "url": "https://t.me/movierecaps67"},
 ]
 
-# မြန်မာစကား ဖတ်ကြားရာတွင် အသံအတက်အကျ သဘာဝကျပြီး အသံအမြန်နှုန်း အားလုံး တပြေးညီစေရန် ညှိထားသော အသံ (၁၇) မျိုး
 VOICE_MODES = {
     "v1":  {"name": "🎙️ မောင်ဘကျော်",        "voice": "my-MM-ThihaNeural",                 "rate": "+18%", "pitch": "+0Hz"},
     "v2":  {"name": "🎙️ မယ်ဖွား",              "voice": "my-MM-NilarNeural",                 "rate": "+18%", "pitch": "+0Hz"},
@@ -49,10 +50,38 @@ VOICE_MODES = {
     "v12": {"name": "🎙️ ဖိုးထောင်",             "voice": "de-DE-FlorianMultilingualNeural",   "rate": "+15%", "pitch": "+0Hz"},
     "v13": {"name": "🎙️ မယ်နန်း",             "voice": "pt-BR-ThalitaMultilingualNeural",   "rate": "+15%", "pitch": "+0Hz"},
     "v14": {"name": "🎙️ ကျော်စွာ",          "voice": "ko-KR-HyunsuMultilingualNeural",    "rate": "+17%", "pitch": "+0Hz"},
-    "v15": {"name": "🎙️ ခင်သန်း",            "voice": "es-ES-ElviraMultilingualNeural",    "rate": "+19%", "pitch": "+0Hz"},
-    "v16": {"name": "🎙️ ဒေါ်ဖွားသိမ်း",       "voice": "es-ES-XimenaMultilingualNeural",    "rate": "+15%", "pitch": "+0Hz"},
-    "v17": {"name": "🎙️ မောင်ဘိုထင်း",       "voice": "en-US-RyanMultilingualNeural",      "rate": "+15%", "pitch": "+0Hz"},
+    "v15": {"name": "🎙️ ခင်သန်း",            "voice": "my-MM-NilarNeural",                 "rate": "+19%", "pitch": "+4Hz"},
+    "v16": {"name": "🎙️ ဒေါ်ဖွားသိမ်း",       "voice": "my-MM-NilarNeural",                 "rate": "+12%", "pitch": "-5Hz"},
+    "v17": {"name": "🎙️ မောင်ဘိုထင်း",       "voice": "my-MM-ThihaNeural",                 "rate": "+15%", "pitch": "-4Hz"},
 }
+
+def load_users() -> dict:
+    if os.path.exists(USERS_FILE):
+        try:
+            with open(USERS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def track_user(user):
+    try:
+        users = load_users()
+        u_id = str(user.id)
+        users[u_id] = {
+            "name": user.full_name or "Unknown",
+            "username": f"@{user.username}" if user.username else "No username",
+            "last_active": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        with open(USERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(users, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.error(f"User tracking error: {e}")
+
+def get_progress_bar(percent: int) -> str:
+    filled = int(percent / 10)
+    empty = 10 - filled
+    return f"[{'■' * filled}{'□' * empty}] {percent}%"
 
 async def check_user_joined(user_id: int, bot) -> bool:
     for ch in REQUIRED_CHANNELS:
@@ -104,7 +133,16 @@ def build_settings_keyboard(speed, pitch):
         ]
     ])
 
+# Telegram Menu (☰ Menu) ခလုတ်ထဲတွင် Command များ အလိုအလျောက် ပေါ်လာစေရန် ထည့်သွင်းခြင်း
+async def setup_bot_commands(application: Application):
+    commands = [
+        BotCommand("start", "🤖 Bot ကို စတင်အသုံးပြုရန်"),
+        BotCommand("users", "📊 အသုံးပြုသူ စာရင်းကြည့်ရန်"),
+    ]
+    await application.bot.set_my_commands(commands)
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update.effective_user)
     user_id = update.effective_user.id
     if not await check_user_joined(user_id, context.bot):
         await update.message.reply_text(
@@ -130,9 +168,32 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
+async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update.effective_user)
+    users = load_users()
+    total_count = len(users)
+
+    report_lines = [f"📊 <b>Bot အသုံးပြုသူ စုစုပေါင်း: {total_count} ဦး</b>\n"]
+    recent_users = list(users.items())[-15:]
+    recent_users.reverse()
+
+    for uid, data in recent_users:
+        safe_name = html.escape(data.get("name", "Unknown"))
+        username = data.get("username", "-")
+        last_time = data.get("last_active", "-")
+        report_lines.append(f"• <b>{safe_name}</b> ({username}) - <code>{last_time}</code>")
+
+    reply_msg = "\n".join(report_lines)
+    await update.message.reply_text(reply_msg, parse_mode="HTML")
+
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "rb") as f:
+            await update.message.reply_document(document=f, caption="📁 User အချက်အလက်များ အပြည့်အစုံ")
+
 async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    track_user(query.from_user)
     user_id = query.from_user.id
 
     if await check_user_joined(user_id, context.bot):
@@ -156,6 +217,7 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def voice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    track_user(query.from_user)
 
     data = query.data
     user_id = query.from_user.id
@@ -165,12 +227,11 @@ async def voice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["voice"] = v_key
         v_name = VOICE_MODES[v_key]["name"].replace("🎙️ ", "")
 
-        # ခလုတ်အမှတ်အသားကို ချက်ချင်း Update လုပ်ပေးခြင်း
         await query.edit_message_reply_markup(reply_markup=build_voice_keyboard(v_key))
         await query.message.reply_text(
             f"✅ <b>{html.escape(v_name)}</b> အသံကို ရွေးချယ်ပြီးပါပြီ။\n\n"
             f"📝 အသံပြောင်းလိုသော စာသား (Text) များကို ပို့ပေးပါခင်ဗျာ-\n"
-            f"<i>(အများဆုံး စာလုံးရေ ၃၀၀၀ အထိ ပို့နိုင်ပါသည်)</i>",
+            f"<i>(အများဆုံး စာလုံးရေ {MAX_CHARACTERS} အထိ ပို့နိုင်ပါသည်)</i>",
             parse_mode="HTML"
         )
 
@@ -203,6 +264,7 @@ async def voice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 os.remove(file_path)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update.effective_user)
     user_id = update.effective_user.id
     if not await check_user_joined(user_id, context.bot):
         await update.message.reply_text(
@@ -256,6 +318,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    track_user(query.from_user)
 
     data = query.data
     speed = context.user_data.get("speed", 0)
@@ -271,7 +334,7 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pitch -= 2
     elif data == "generate_audio":
         user_id = query.from_user.id
-        # လုပ်ငန်းစဉ်ကို သီးခြား background task အဖြစ် ခွဲထုတ်၍ ပြိုင်တူ execute လုပ်စေခြင်း
+        # ပြိုင်တူ လုပ်ဆောင်နိုင်ရန် သီးခြား asynchronous task ဖြင့် run ခြင်း
         asyncio.create_task(start_audio_generation(query, context, user_id))
         return
 
@@ -325,13 +388,48 @@ async def start_audio_generation(query, context, user_id):
     out_file = f"voice_{user_id}_{uuid.uuid4().hex[:8]}.mp3"
 
     try:
-        await query.edit_message_text(f"🎙️ Audio: <b>{name_clean}</b> အသံ စတင်ထုတ်လုပ်နေပါပြီ...")
+        # ကနဦး စတင်ချိန်တွင် 30% ဖြင့် ပြသခြင်း
+        await query.edit_message_text(
+            f"🎙️ Audio: <b>{html.escape(name_clean)}</b> အသံ ထုတ်လုပ်နေပါသည်... (0.0s)\n"
+            f"{get_progress_bar(30)}",
+            parse_mode="HTML"
+        )
 
-        # မည်သည့် Semaphore တန်းစီမှုမှ မရှိဘဲ တစ်ပြိုင်တည်း တိုက်ရိုက်ထုတ်ခြင်း
         communicate = edge_tts.Communicate(user_text, v_info["voice"], rate=rate_str, pitch=pitch_str)
-        await communicate.save(out_file)
+        save_task = asyncio.create_task(communicate.save(out_file))
+
+        current_percent = 30
+        while not save_task.done():
+            await asyncio.sleep(1.5)
+            if save_task.done():
+                break
+            elapsed = round(time.time() - start_time, 1)
+            if current_percent < 95:
+                current_percent += 15
+                if current_percent > 95:
+                    current_percent = 95
+            try:
+                await query.edit_message_text(
+                    f"🎙️ Audio: <b>{html.escape(name_clean)}</b> အသံ ထုတ်လုပ်နေပါသည်... ({elapsed}s)\n"
+                    f"{get_progress_bar(current_percent)}",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
+        await save_task
 
         elapsed = round(time.time() - start_time, 1)
+
+        # ပြီးစီးချိန်တွင် 100% ပြသခြင်း
+        finish_msg = (
+            f"Audio: ✅ <b>{html.escape(name_clean)}</b> အသံထုတ်လုပ်မှု ပြီးစီးပါပြီ ({elapsed}s)\n"
+            f"{get_progress_bar(100)}"
+        )
+        try:
+            await query.edit_message_text(finish_msg, parse_mode="HTML")
+        except Exception:
+            pass
 
         with open(out_file, "rb") as audio:
             await query.message.reply_audio(
@@ -340,7 +438,6 @@ async def start_audio_generation(query, context, user_id):
                 performer="Burmese Text to speech",
                 caption=f"🎙️ အသံ: {name_clean} | ကြာချိန်: {elapsed}s | Speed: {rate_str} | Pitch: {pitch_str}"
             )
-        await query.edit_message_text(f"✅ <b>{name_clean}</b> အသံထုတ်လုပ်မှု ပြီးစီးပါပြီ ({elapsed}s)။")
     except Exception as e:
         await query.message.reply_text(f"❌ အသံထုတ်ရာတွင် Error ဖြစ်ပွားပါသည်- {str(e)}")
     finally:
@@ -354,9 +451,19 @@ def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is required.")
 
-    # concurrent_updates=True ဖြင့် user များစွာ၏ action များကို အပြိုင် စီမံခန့်ခွဲခြင်း
-    app = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
+    keep_alive()
+
+    # concurrent_updates=True နှင့် post_init ဖြင့် Menu ခလုတ် စနစ်တကျ ထည့်သွင်းခြင်း
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .concurrent_updates(True)
+        .post_init(setup_bot_commands)
+        .build()
+    )
+
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("users", users_command))
     app.add_handler(CallbackQueryHandler(check_join_callback, pattern="^check_join$"))
     app.add_handler(CallbackQueryHandler(voice_callback, pattern="^(sel_|test_voice)"))
     app.add_handler(CallbackQueryHandler(settings_callback, pattern="^(speed_|pitch_|generate_audio|none)"))
